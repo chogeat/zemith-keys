@@ -1,0 +1,30 @@
+{
+ "name": "제미스 키스 (Zemith Keys)",
+ "short_name": "제미스 키스",
+ "description": "제니스 OB 밴드 합주용 키보드 반주·박자 앱",
+ "start_url": "./",
+ "scope": "./",
+ "display": "standalone",
+ "orientation": "any",
+ "background_color": "#0D0D0D",
+ "theme_color": "#0D0D0D",
+ "lang": "ko",
+ "icons": [
+  {
+   "src": "icon-192.png",
+   "sizes": "192x192",
+   "type": "image/png"
+  },
+  {
+   "src": "icon-512.png",
+   "sizes": "512x512",
+   "type": "image/png"
+  },
+  {
+   "src": "icon-maskable-512.png",
+   "sizes": "512x512",
+   "type": "image/png",
+   "purpose": "maskable"
+  }
+ ]
+}
