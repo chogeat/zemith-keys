@@ -112,6 +112,14 @@ select{font:inherit;color:var(--text);background:var(--panel2);border:1px solid 
 #btnStart,#btnTempo{font-size:12px;line-height:1.25;padding:4px;flex-direction:column}
 #btnTempo b{color:var(--accent)}
 body.locked .lockable{pointer-events:none;opacity:.45}
+#btnStart.tap{background:var(--accent);color:#0D0D0D;border-color:var(--accent);font-weight:900;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+#btnStart.tap span{font-size:15px;letter-spacing:1px}#btnStart.tap b{font-size:11px;font-weight:700}
+body.locked #btnStart.tap{pointer-events:auto;opacity:1}
+#btnStart.tapok{animation:tapok .35s ease-out}#btnStart.tapx{animation:tapx .35s ease-out}
+@keyframes tapok{0%{box-shadow:0 0 0 0 #C6FF00cc;transform:scale(.94)}100%{box-shadow:0 0 0 14px #C6FF0000;transform:scale(1)}}
+@keyframes tapx{0%{box-shadow:0 0 0 0 #ff5d7acc}100%{box-shadow:0 0 0 14px #ff5d7a00}}
+.tappad{width:100%;min-height:120px;font-size:22px;font-weight:900;background:#1a1a1a;color:var(--accent);border:2px solid var(--accent);border-radius:16px;touch-action:manipulation;user-select:none;-webkit-user-select:none}
+.tappad.hit{background:var(--accent);color:#0D0D0D}
 #btnLock.on{background:var(--stop);border-color:var(--stop);color:#fff}
 #sheet{position:fixed;inset:0;background:var(--bg);display:none;flex-direction:column;z-index:20}
 #sheet.open{display:flex}
@@ -831,8 +839,9 @@ const WSOLA_SRC = "// WSOLA time-stretch worker: renders a stereo track onto an 
 const ANALYSIS_SRC = "// Audio analysis helpers (beat tracking, alignment, drum hits, spectra, room decay).\nconst AN = (() => {\n  function fft(re, im) {\n    const n = re.length;\n    for (let i = 1, j = 0; i < n; i++) { let bit = n >> 1; for (; j & bit; bit >>= 1) j ^= bit; j ^= bit; if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; } }\n    for (let len = 2; len <= n; len <<= 1) {\n      const ang = -2 * Math.PI / len, wr = Math.cos(ang), wi = Math.sin(ang);\n      for (let i = 0; i < n; i += len) { let cr = 1, ci = 0;\n        for (let j = 0; j < len / 2; j++) { const a = i + j, b = a + len / 2; const xr = re[b] * cr - im[b] * ci, xi = re[b] * ci + im[b] * cr;\n          re[b] = re[a] - xr; im[b] = im[a] - xi; re[a] += xr; im[a] += xi; const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t; } }\n    }\n  }\n  function mono(L, R) { const n = L.length, m = new Float32Array(n); for (let i = 0; i < n; i++) m[i] = R ? (L[i] + R[i]) * 0.5 : L[i]; return m; }\n  function decimate(x, f) { const n = Math.floor(x.length / f), y = new Float32Array(n); for (let i = 0; i < n; i++) { let s = 0; for (let j = 0; j < f; j++) s += x[i * f + j]; y[i] = s / f; } return y; }\n  // band-limited spectral flux; returns {env, fps}\n  function flux(x, sr, n, hop, lo, hi) {\n    const nf = Math.floor((x.length - n) / hop), env = new Float32Array(nf), win = new Float32Array(n);\n    for (let i = 0; i < n; i++) win[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / n);\n    const b0 = Math.max(1, Math.floor(lo * n / sr)), b1 = Math.min(n / 2, Math.ceil(hi * n / sr));\n    let prev = new Float32Array(b1 - b0), re = new Float32Array(n), im = new Float32Array(n);\n    for (let f = 0; f < nf; f++) {\n      for (let i = 0; i < n; i++) { re[i] = x[f * hop + i] * win[i]; im[i] = 0; }\n      fft(re, im); let s = 0;\n      for (let k = b0; k < b1; k++) { const m = Math.log1p(10 * Math.hypot(re[k], im[k])); const d = m - prev[k - b0]; if (d > 0) s += d; prev[k - b0] = m; }\n      env[f] = s;\n    }\n    // center: frame f covers [f*hop, f*hop+n); attribute to its center\n    return { env, fps: sr / hop, t0: n / 2 / sr };\n  }\n  function normalizeEnv(env, fps) {\n    const w = Math.round(fps * 0.5), out = new Float32Array(env.length); let acc = 0;\n    for (let i = 0; i < env.length; i++) { acc += env[i]; if (i >= w) acc -= env[i - w]; const m = acc / Math.min(i + 1, w); out[i] = Math.max(0, env[i] - m); }\n    let sd = 0; for (const v of out) sd += v * v; sd = Math.sqrt(sd / out.length) + 1e-9; for (let i = 0; i < out.length; i++) out[i] /= sd; return out;\n  }\n  function tempo(env, fps) {\n    let best = 0, bestP = 0;\n    for (let bpm = 40; bpm <= 220; bpm += 0.5) {\n      const lag = fps * 60 / bpm, l0 = Math.floor(lag), fr = lag - l0; let s = 0;\n      for (let i = l0 + 1; i < env.length; i++) s += env[i] * (env[i - l0] * (1 - fr) + env[i - l0 - 1] * fr);\n      const prior = Math.exp(-0.5 * Math.pow(Math.log2(bpm / 110) / 0.9, 2));\n      const sc = s / (env.length - l0) * prior; if (sc > best) { best = sc; bestP = bpm; }\n    }\n    return bestP;\n  }\n  function dpBeats(env, fps, bpm, tight = 100) {\n    const p = fps * 60 / bpm, n = env.length, score = new Float32Array(n), back = new Int32Array(n).fill(-1);\n    for (let i = 0; i < n; i++) {\n      let best = -1e9, bi = -1; const a = Math.max(0, Math.round(i - 2 * p)), z = Math.round(i - p / 2);\n      for (let j = a; j <= z; j++) { const r = Math.log((i - j) / p), v = score[j] - tight * r * r; if (v > best) { best = v; bi = j; } }\n      score[i] = env[i] + (bi >= 0 ? best : 0); back[i] = bi;\n    }\n    let i = n - 1, mx = -1e9; for (let k = Math.max(0, n - Math.round(p * 2)); k < n; k++) if (score[k] > mx) { mx = score[k]; i = k; }\n    const out = []; while (i >= 0) { out.push(i); i = back[i]; }\n    return out.reverse();\n  }\n  // time-domain transient refinement (onset = first point reaching 50% of local rise)\n  function refine(x, sr, times, win = 0.06) {\n    const hp = Float32Array.from(x);\n    { const w0 = 2 * Math.PI * 2000 / sr, c = Math.cos(w0), al = Math.sin(w0) / (2 * Math.SQRT1_2), a0 = 1 + al;\n      const b0 = (1 + c) / 2 / a0, b1 = -(1 + c) / a0, b2 = (1 + c) / 2 / a0, a1 = -2 * c / a0, a2 = (1 - al) / a0;\n      for (let pass = 0; pass < 2; pass++) { let x1 = 0, x2 = 0, y1 = 0, y2 = 0; for (let i = 0; i < hp.length; i++) { const xi = hp[i], y = b0 * xi + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = xi; y2 = y1; y1 = y; hp[i] = y; } } }\n    const w = Math.max(1, Math.round(sr * 0.002)), env = new Float32Array(x.length); let acc = 0;\n    for (let i = 0; i < x.length; i++) { acc += hp[i] * hp[i]; if (i >= w) acc -= hp[i - w] * hp[i - w]; env[i] = Math.sqrt(Math.max(0, acc) / w); }\n    const sh = times.map(t => { const c = Math.round(t * sr), a0 = Math.max(0, c - Math.round(win * sr)), z = Math.min(x.length - 1, c + Math.round(win * sr));\n      let pk = a0; for (let i = a0; i <= z; i++) if (env[i] > env[pk]) pk = i;\n      let base = env[a0]; for (let i = a0; i < pk; i++) base = Math.min(base, env[i]);\n      let on = a0; for (let i = a0; i <= pk; i++) if (env[i] >= base + 0.5 * (env[pk] - base)) { on = i; break; }\n      return on / sr - t; });\n    const s = sh.slice().sort((p, q) => p - q), med = s[s.length >> 1];\n    return times.map((t, i) => t + (Math.abs(sh[i] - med) > 0.02 ? med : sh[i]));\n  }\n  function bandEnergyAt(x, sr, t, lo, hi, dur = 0.05) {\n    const n = 1024, re = new Float32Array(n), im = new Float32Array(n), s = Math.round(t * sr);\n    for (let i = 0; i < n; i++) { const q = s + i; re[i] = q >= 0 && q < x.length ? x[q] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / n)) : 0; }\n    fft(re, im); let e = 0; const b0 = Math.floor(lo * n / sr), b1 = Math.ceil(hi * n / sr);\n    for (let k = Math.max(1, b0); k < Math.min(n / 2, b1); k++) e += re[k] * re[k] + im[k] * im[k]; return e;\n  }\n  // full beat analysis for a new song: returns quarter-note beat times with bar 1 on a downbeat\n  function analyzeSong(x, sr, onProg) {\n    const xs = sr > 22050 ? decimate(x, Math.round(sr / 22050)) : x, s2 = sr > 22050 ? sr / Math.round(sr / 22050) : sr;\n    onProg && onProg(0.1);\n    const f = flux(xs, s2, 1024, 256, 30, 8000); const env = normalizeEnv(f.env, f.fps);\n    onProg && onProg(0.4);\n    let bpm = tempo(env, f.fps);\n    const idx = dpBeats(env, f.fps, bpm);\n    onProg && onProg(0.7);\n    let beats = idx.map(i => i / f.fps + f.t0 - 0.0116);\n    const rawBeats = beats.slice(); beats = refine(x, sr, beats);\n    // bar phase from low-band (kick) energy on each phase mod 4\n    const lowE = beats.map(t => bandEnergyAt(xs, s2, t, 30, 150)), midE = beats.map(t => bandEnergyAt(xs, s2, t, 1500, 5000));\n    let bestPh = 0, bestSc = -1e9;\n    for (let ph = 0; ph < 4; ph++) { let a = 0, b = 0, c = 0, d = 0; for (let i = 0; i < beats.length; i++) { const k = (i - ph + 400) % 4; if (k === 0) { a += lowE[i]; c++; } if (k === 1 || k === 3) { b += midE[i]; d++; } }\n      const sc = Math.log(a / c + 1e-9) + 0.5 * Math.log(b / d + 1e-9); if (sc > bestSc) { bestSc = sc; bestPh = ph; } }\n    // extend backwards to the first sound so bar 1 can start before the drums\n    const firstSound = firstSoundTime(x, sr);\n    const iv = beats.length > 4 ? (beats[4] - beats[0]) / 4 : 60 / bpm;\n    while (beats[0] - iv > firstSound - iv * 0.5) beats.unshift(beats[0] - iv), bestPh++;\n    bestPh = bestPh % 4; const first = bestPh === 0 ? 0 : bestPh - 4;\n    for (let k = 0; k > first; k--) beats.unshift(beats[0] - iv);\n    onProg && onProg(1);\n    return { beats: beats.map(t => +t.toFixed(4)), bpm, rawBeats };\n  }\n  function firstSoundTime(x, sr) { let pk = 0; for (let i = 0; i < x.length; i += 64) pk = Math.max(pk, Math.abs(x[i])); const th = pk * 0.01; for (let i = 0; i < x.length; i++) if (Math.abs(x[i]) > th) return i / sr; return 0; }\n  // sections from per-bar loudness changes\n  function sectionsFrom(x, sr, beats, end) {\n    const nb = Math.ceil(beats.length / 4), rms = [];\n    for (let b = 0; b < nb; b++) { const a = Math.max(0, Math.round(beats[b * 4] * sr)), z = Math.min(x.length, Math.round((b * 4 + 4 < beats.length ? beats[b * 4 + 4] : end) * sr)); let s = 0, c = 0; for (let i = a; i < z; i += 16) { s += x[i] * x[i]; c++; } rms.push(10 * Math.log10(s / Math.max(1, c) + 1e-12)); }\n    const sm = rms.map((v, i) => { let s = 0, c = 0; for (let j = Math.max(0, i - 1); j <= Math.min(nb - 1, i + 1); j++) { s += rms[j]; c++; } return s / c; });\n    const cuts = [1];\n    for (let b = 4; b < nb - 2; b++) { const before = (sm[b - 1] + sm[b - 2]) / 2, after = (sm[b] + sm[b + 1]) / 2; if (Math.abs(after - before) > 2.2 && b + 1 - cuts[cuts.length - 1] >= 4) cuts.push(b + 1); }\n    const out = []; for (let i = 0; i < cuts.length; i++) out.push(['\uad6c\uac04 ' + (i + 1), cuts[i], i + 1 < cuts.length ? cuts[i + 1] - 1 : nb]);\n    return out;\n  }\n  // offset (seconds) of b relative to a: b's content at t+off equals a's content at t\n  function align(a, b, sr) {\n    const f = Math.max(1, Math.round(sr / 11025)), as = decimate(a, f), bs = decimate(b, f), s2 = sr / f;\n    const n = Math.min(as.length, bs.length, Math.round(s2 * 90));\n    const ea = normalizeEnv(flux(as.subarray(0, n), s2, 256, 32, 30, 5000).env, s2 / 32), eb = normalizeEnv(flux(bs.subarray(0, n), s2, 256, 32, 30, 5000).env, s2 / 32);\n    const maxLag = Math.round(0.6 * s2 / 32); let best = -1e9, bl = 0;\n    for (let lag = -maxLag; lag <= maxLag; lag++) { let s = 0; for (let i = Math.max(0, -lag); i < Math.min(ea.length, eb.length - lag); i++) s += ea[i] * eb[i + lag]; if (s > best) { best = s; bl = lag; } }\n    return bl * 32 / s2;\n  }\n  // ---- drums: per-band onsets, classification, cleanest hits ----\n  function peaks(env, fps, thr, minGap) {\n    const out = [], g = Math.round(minGap * fps);\n    for (let i = 1; i < env.length - 1; i++) if (env[i] > thr && env[i] >= env[i - 1] && env[i] > env[i + 1]) {\n      if (out.length && i - out[out.length - 1].i < g) { if (env[i] > out[out.length - 1].v) out[out.length - 1] = { i, v: env[i] }; } else out.push({ i, v: env[i] }); }\n    return out;\n  }\n  // grid: optional array of quarter-beat times (in this file's time) with bar 1 at index 0\n  function analyzeDrums(x, sr, onProg, grid) {\n    const f2 = Math.round(sr / 22050) || 1, xs = decimate(x, f2), s2 = sr / f2;\n    const fl = flux(xs, s2, 1024, 128, 30, 11000), env = normalizeEnv(fl.env, fl.fps);\n    onProg && onProg(0.4);\n    const cand = peaks(env, fl.fps, 1.2, 0.05).map(p => p.i / fl.fps + fl.t0 - 0.0058);\n    const BB = [[30, 130], [150, 900], [1500, 5000], [6000, 11000]];\n    const feats = cand.map(t => {\n      const r = BB.map(b => Math.max(0, bandEnergyAt(xs, s2, t + 0.002, b[0], b[1]) - bandEnergyAt(xs, s2, t - 0.05, b[0], b[1])));\n      const hiNow = bandEnergyAt(xs, s2, t + 0.002, 6000, 11000), hiLate = bandEnergyAt(xs, s2, t + 0.45, 6000, 11000);\n      return { t, r, sustain: 10 * Math.log10(hiLate / (hiNow + 1e-12) + 1e-12) };\n    });\n    onProg && onProg(0.75);\n    const mx = [0, 1, 2, 3].map(i => Math.max(1e-12, ...feats.map(f => f.r[i])));\n    feats.forEach(f => { f.d = f.r.map((v, i) => Math.max(-60, 10 * Math.log10(v / mx[i] + 1e-9))); });\n    // where does each onset sit on the beat grid? back = on beat 2 or 4\n    const where = t => { if (!grid || grid.length < 8) return null; let lo = 0, hi = grid.length - 1; if (t < grid[0] - 0.1 || t > grid[hi] + 2) return null;\n      while (hi - lo > 1) { const m = (lo + hi) >> 1; if (grid[m] <= t) lo = m; else hi = m; }\n      const iv = grid[hi] - grid[lo] || 1, fr = (t - grid[lo]) / iv; const idx = fr > 0.5 ? hi : lo, near = Math.min(fr, 1 - fr) * iv;\n      return { on: near < 0.045, back: near < 0.045 && (idx % 4 === 1 || idx % 4 === 3), down: near < 0.045 && (idx % 4 === 0 || idx % 4 === 2) }; };\n    feats.forEach(f => { f.w = where(f.t); });\n    const hits = { kick: [], snare: [], hat: [], tom: [], cymbal: [] };\n    const rest = [];\n    for (const f of feats) {\n      const [lo, mid, sn, hi] = f.d;\n      const isKick = lo > -5 || (lo > -9 && lo - Math.max(sn, hi) > 6);\n      if (isKick) { hits.kick.push({ t: f.t, v: lo }); f.kick = true; }\n      const isTom = !isKick && lo > -14 && mid > -16 && sn < -20;\n      if (isTom) { hits.tom.push({ t: f.t, v: mid }); continue; }\n      if (!isKick || sn > -14) rest.push(f);\n    }\n    const useGrid = grid && rest.filter(f => f.w).length > 40;\n    if (useGrid) {\n      // cluster the non-kick hits (k-means on spectral shape + level), then name the cluster that sits on beats 2\u00b74 the snare\n      const vec = f => { const [lo, mid, sn, hi] = f.d; return [sn - hi, mid - Math.max(sn, hi), Math.max(sn, hi), f.sustain / 2]; };\n      const V = rest.map(vec), dim = 4, mean = [], sd = [];\n      for (let j = 0; j < dim; j++) { const a = V.map(v => v[j]); const m = a.reduce((s, v) => s + v, 0) / a.length; mean.push(m); sd.push(Math.sqrt(a.reduce((s, v) => s + (v - m) * (v - m), 0) / a.length) + 1e-6); }\n      const Z = V.map(v => v.map((x, j) => (x - mean[j]) / sd[j]));\n      let best = null;\n      for (const K of [2, 3]) for (let seed = 0; seed < 4; seed++) {\n        const order = Z.map((z, i) => i).sort((a, b) => Z[a][2] - Z[b][2]);\n        let C = Array.from({ length: K }, (_, k) => Z[order[Math.min(order.length - 1, Math.floor((k + 0.5 + seed * 0.13) / K * order.length))]].slice());\n        let lab = new Array(Z.length).fill(0);\n        for (let it = 0; it < 30; it++) {\n          lab = Z.map(z => { let bi = 0, bd = 1e9; C.forEach((c, k) => { let d = 0; for (let j = 0; j < dim; j++) d += (z[j] - c[j]) ** 2; if (d < bd) { bd = d; bi = k; } }); return bi; });\n          C = C.map((c, k) => { const m = Z.filter((_, i) => lab[i] === k); if (!m.length) return c; return c.map((_, j) => m.reduce((s, z) => s + z[j], 0) / m.length); });\n        }\n        const stats = C.map((_, k) => { const m = rest.filter((_, i) => lab[i] === k), g = m.filter(f => f.w); const back = g.filter(f => f.w.back).length, on = g.filter(f => f.w.on).length;\n          return { k, n: m.length, back: g.length ? back / g.length : 0, offbeat: g.length ? 1 - on / g.length : 0, sustain: m.length ? m.reduce((s, f) => s + f.sustain, 0) / m.length : -60 }; });\n        const valid = stats.filter(s => s.n >= Math.max(8, rest.length * 0.05));\n        if (!valid.length) continue;\n        const sn = valid.reduce((a, b) => b.back > a.back ? b : a);\n        const others = stats.filter(s => s.k !== sn.k), otherBack = others.reduce((s, o) => s + o.back * o.n, 0) / Math.max(1, others.reduce((s, o) => s + o.n, 0));\n        const score = sn.back - otherBack;\n        if (!best || score > best.score) best = { score, lab: lab.slice(), sn: sn.k, stats };\n      }\n      if (best && best.score > 0.15) {\n        const lv = rest.filter((_, i) => best.lab[i] === best.sn).map(f => Math.max(f.d[2], f.d[3])).sort((a, b) => a - b), snMed = lv[lv.length >> 1];\n        rest.forEach((f, i) => { const [lo, mid, sn, hi] = f.d;\n          if (best.lab[i] === best.sn && Math.max(sn, hi) > snMed - 9 && (!f.kick || sn > -6)) hits.snare.push({ t: f.t, v: Math.max(sn, hi) });\n          else if (f.sustain > -14 && hi > -18) hits.cymbal.push({ t: f.t, v: hi, wk: f.kick ? 1 : 0 });\n          else if (lo < -5 || f.kick) hits.hat.push({ t: f.t, v: Math.max(hi, sn), wk: f.kick ? 1 : 0 }); });\n      } else useRules();\n    } else useRules();\n    function useRules() {\n      for (const f of rest) { const [lo, mid, sn, hi] = f.d;\n        const isSnare = sn > -17 && hi > -20 && lo < -8;\n        const isCym = !isSnare && hi > -16 && f.sustain > -14;\n        if (isSnare) hits.snare.push({ t: f.t, v: Math.max(sn, hi) });\n        else if (isCym) hits.cymbal.push({ t: f.t, v: hi });\n        else if (lo < -5 && (hi > -40 || sn > -40) && mid < Math.max(hi, sn) + 6) hits.hat.push({ t: f.t, v: Math.max(hi, sn) }); }\n    }\n    for (const nm in hits) hits[nm].forEach(h => { h.v = Math.max(0.3, Math.min(1, Math.pow(10, h.v / 20) * 1.2)); });\n    hits.usedGrid = !!(useGrid && hits.snare.length);\n    onProg && onProg(1);\n    return hits;\n  }\n  // pick the cleanest isolated examples of one instrument (start, length) from the full-rate signal\n  function cleanest(x, sr, list, all, count, maxLen) {\n    const solo = list.filter(h => !h.wk); if (solo.length >= count) list = solo;\n    const sc = list.map(h => { const a = Math.round(h.t * sr); let pre = 0, c = 0; for (let i = Math.max(0, a - Math.round(0.05 * sr)); i < a - Math.round(0.004 * sr); i++) { pre += x[i] * x[i]; c++; }\n      let pk = 0; for (let i = a; i < a + Math.round(0.03 * sr) && i < x.length; i++) pk = Math.max(pk, Math.abs(x[i]));\n      const next = all.filter(t => t > h.t + 0.03).reduce((m, t) => Math.min(m, t), h.t + maxLen);\n      const room = next - h.t; return { h, s: 20 * Math.log10(pk / Math.sqrt(pre / Math.max(1, c) + 1e-12)) + Math.min(room, 0.3) * 40, room, pk }; });\n    sc.sort((p, q) => q.s - p.s);\n    const picked = [];\n    for (const c of sc) { if (picked.length >= count) break; if (picked.some(p => Math.abs(p.h.t - c.h.t) < 1)) continue; if (picked.length && picked.some(p => Math.abs(p.pk - c.pk) / Math.max(p.pk, c.pk) < 0.08) && sc.length > count * 3) continue; picked.push(c); }\n    return picked.map(c => ({ t: c.h.t, len: Math.max(0.08, Math.min(maxLen, c.room - 0.005)), pk: c.pk }));\n  }\n  function cut(L, R, sr, t, len) {\n    const a = Math.max(0, Math.round((t - 0.0015) * sr)), n = Math.min(L.length - a, Math.round(len * sr)), out = new Float32Array(n); let mx = 0;\n    for (let i = 0; i < n; i++) { out[i] = R ? (L[a + i] + R[a + i]) / 2 : L[a + i]; mx = Math.max(mx, Math.abs(out[i])); }\n    const fo = Math.min(n, Math.round(0.03 * sr)), fi = Math.round(0.0008 * sr);\n    for (let i = 0; i < n; i++) { let g = 0.89 / (mx || 1); if (i < fi) g *= i / fi; if (i > n - fo) g *= (n - i) / fo; out[i] *= g; }\n    return out;\n  }\n  // 1/3-octave band powers (dB) averaged over the signal\n  const BANDS = [40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000];\n  function spectrum(x, sr, offset = 0, maxSec = 400) {\n    const n = 4096, hop = 8192, re = new Float32Array(n), im = new Float32Array(n), acc = new Float64Array(BANDS.length); let frames = 0;\n    const a0 = Math.max(0, Math.round(offset * sr));\n    for (let s = a0; s + n < Math.min(x.length, a0 + maxSec * sr); s += hop) {\n      for (let i = 0; i < n; i++) { re[i] = x[s + i] * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / n)); im[i] = 0; } fft(re, im);\n      BANDS.forEach((fc, bi) => { const lo = fc / 1.122, hi = fc * 1.122; let e = 0; for (let k = Math.max(1, Math.floor(lo * n / sr)); k <= Math.ceil(hi * n / sr); k++) e += re[k] * re[k] + im[k] * im[k]; acc[bi] += e; });\n      frames++; }\n    return BANDS.map((f, i) => 10 * Math.log10(acc[i] / Math.max(1, frames) + 1e-12));\n  }\n  // EQ suggestion so keys avoid the busiest ranges of the other instruments\n  function suggestEQ(keys, others) {\n    const n = BANDS.length, k = keys, o = others;\n    const mean = a => a.reduce((s, v) => s + v, 0) / a.length, mo = mean(o), mk = mean(k);\n    const rel = BANDS.map((f, i) => (o[i] - mo) - (k[i] - mk));   // positive: others relatively stronger than keys (shape only)\n    let hpf = 60; for (let i = 0; i < n && BANDS[i] <= 160; i++) if (rel[i] > 6) hpf = Math.round(BANDS[i] * 1.12);\n    const lm = BANDS.map((f, i) => (f >= 160 && f <= 400) ? i : -1).filter(i => i >= 0);\n    const lmRel = lm.reduce((s, i) => s + rel[i], 0) / lm.length;\n    const low = Math.max(-6, Math.min(0, -Math.round((lmRel + 2) * 0.6)));\n    const hb = BANDS.map((f, i) => (f >= 2500 && f <= 6300) ? i : -1).filter(i => i >= 0);\n    const hiRel = hb.reduce((s, i) => s + rel[i], 0) / hb.length;\n    const bright = Math.max(-3, Math.min(3, Math.round((hiRel - 3) * 0.3)));\n    return { hpf: Math.max(60, Math.min(160, hpf)), lowmid: low, bright };\n  }\n  // reverberation time (RT60) from a clap recording (Schroeder backward integration, T20 extrapolated)\n  function rt60(x, sr) {\n    let pk = 0, pi = 0; for (let i = 0; i < x.length; i++) if (Math.abs(x[i]) > pk) { pk = Math.abs(x[i]); pi = i; }\n    const n = Math.min(x.length - pi, Math.round(3 * sr)); if (n < sr * 0.1) return null;\n    const e = new Float64Array(n + 1); for (let i = n - 1; i >= 0; i--) e[i] = e[i + 1] + x[pi + i] * x[pi + i];\n    const db = i => 10 * Math.log10(e[i] / e[0] + 1e-15);\n    let i5 = -1, i25 = -1; for (let i = 0; i < n; i++) { const d = db(i); if (i5 < 0 && d <= -5) i5 = i; if (d <= -25) { i25 = i; break; } }\n    if (i5 < 0 || i25 < 0) return null;\n    return 3 * (i25 - i5) / sr;\n  }\n  return { flux, normalizeEnv, peaks, bandEnergyAt, decimate, analyzeSong, sectionsFrom, align, analyzeDrums, cleanest, cut, spectrum, suggestEQ, rt60, mono, BANDS, refine };\n})();\nif (typeof module !== 'undefined') module.exports = AN;\n";
 const SR = 44100;
 const STANDALONE = true;
-const APP_VER = 'v2.4', APP_DATE = '2026.11.20';
+const APP_VER = 'v2.5', APP_DATE = '2026.11.20';
 const CHANGELOG = [
+  ['v2.5','2026.11.20','[첫박!] 버튼: 재생 중 밴드의 첫박에 누르면 그 마디 첫박으로 다시 맞춰요(자동·바로·부드럽게, 8번 눌러 맞추기, 추천 속도)'],
   ['v2.4','2026.11.20','첫 화면 새 디자인(입체 키보드·흐르는 웨이브), 도움말에 휴대폰 앱 설치 방법'],
   ['v2.3','2026.11.20','"계속" 패턴 적용, 위쪽 카운트인 4박/2박 버튼, 버전 정보·업데이트 기록, "곡 선택"'],
   ['v2.2','2026.11.19','도움말 탭, "? 도움말" 버튼'],
@@ -867,7 +876,7 @@ function bsearch(arr, t){ let lo=0, hi=arr.length-1; if (!arr.length || t < arr[
 const LS_G = 'zk-global-v2', LS_S = id => 'zk-song-'+id;
 const PER = ['fader','sections','barPat','start','markers','loop','tempo','fx','fxSec','drum'];
 function defaultSections(){ return (SONG.sections||[['전체',1,NBAR]]).map(s=>({name:s[0], from:s[1], to:s[2], pattern:'SSSS', vol:{orig:0, mr:0, click:0, drum:0}})); }
-function defaultsGlobal(){ return { song:'cweal', countInPat:'SMMM', countInBeats:4, stopFade:false, smoothVol:false, syncMs:0, follow:true, target:'section',
+function defaultsGlobal(){ return { song:'cweal', countInPat:'SMMM', countInBeats:4, stopFade:false, smoothVol:false, syncMs:0, follow:true, target:'section', tap:{on:true, mode:'auto', max:1, cal:null},
   sound:{id:'cc0-snare_crossstick', mid:0.65, weak:0.35, tone:0, decay:100, pitch:0}, autoLoad:true, exportFmt:'mp3', exportWhat:'all', myFx:[] }; }
 function defaultsSong(){ return { fader:{orig:{db:0,mute:true}, mr:{db:0,mute:false}, click:{db:-6,mute:false}, drum:{db:-6,mute:false}},
   sections: defaultSections(), barPat:{}, start:1, markers:[], loop:{on:false, from:1, to:2, auto:true},
@@ -1169,15 +1178,24 @@ function makeEngine(c, g, offline, full){
     if (buf === clickBuf && S.sound.decay < 100) { const d = Math.max(0.015, len * S.sound.decay/100); gg.gain.setValueAtTime(v, t + d*0.4); gg.gain.linearRampToValueAtTime(0, t + d); }
     src.connect(gg); gg.connect(viaSec === 'drum' ? g.sec.drum : viaSec ? g.toneA.lo : g.toneB.lo);
     src.start(t); src.stop(t + len + 0.02);
+    if (!offline) { E.sources.push(src); src.onended = () => { const i = E.sources.indexOf(src); if (i>=0) E.sources.splice(i,1); }; }
   };
-  E.makeSeg = (t0, from, toExcl) => {
+  E.makeSeg = (t0, from, toExcl, oStart) => {
+    // oStart: start in the middle of the song (첫박! jump) — no count-in
+    const mid = oStart !== undefined;
+    if (mid) { const bi = bsearch(TL.beats, oStart); from = Math.max(1, Math.floor(Math.max(0,bi)/4)+1); }
     const bl = TL.barDurO(from)/4;
-    const o0 = TL.barO(from), o1 = TL.barO(toExcl);
-    const cin = S.countInBeats === 2 ? 2 : 4;
+    const o0 = mid ? oStart : TL.barO(from), o1 = TL.barO(toExcl);
+    const cin = mid ? 0 : (S.countInBeats === 2 ? 2 : 4);
     const songStart = t0 + cin*bl;
     const seg = {t0, bl, songStart, o0, o1, from, toExcl, end: songStart + (o1 - o0),
-      nextBeat:(from-1)*4, lastBeat: toExcl > NBAR ? NB : (toExcl-1)*4, cinIdx:0, cin, nextBar:from+1, streams:[]};
-    seg.at = o => seg.songStart + (o - seg.o0);
+      nextBeat: mid ? bsearch(TL.beats, oStart - 1e-6) + 1 : (from-1)*4, lastBeat: toExcl > NBAR ? NB : (toExcl-1)*4, cinIdx:0, cin, nextBar:from+1, streams:[], trk:[], gl:null};
+    // output-timeline position at audio time t (includes a smooth catch-up glide)
+    seg.glShift = () => seg.gl ? (seg.gl.r-1)*(seg.gl.T2-seg.gl.T1) : 0;
+    seg.oAt = t => seg.o0 + (t - seg.songStart) + (seg.gl ? (seg.gl.r-1)*Math.min(Math.max(t-seg.gl.T1,0), seg.gl.T2-seg.gl.T1) : 0);
+    seg.oFinal = t => seg.o0 + (t - seg.songStart) + seg.glShift();
+    seg.at = o => { const t = seg.songStart + (o - seg.o0), G = seg.gl; if (!G || t <= G.T1) return t;
+      if (o <= seg.oAt(G.T2)) return G.T1 + (o - seg.oAt(G.T1))/G.r; return t - seg.glShift(); };
     seg.hitIdx = Math.max(0, bsearch(TL.hits.map(h=>h.o), o0 - 1e-6) + 1);
     for (const tid of TRACK_IDS) {
       if (!trackActive(tid)) continue;
@@ -1191,7 +1209,7 @@ function makeEngine(c, g, offline, full){
         const when = seg.at(a);
         if (when < c.currentTime) { const late = c.currentTime - when; if (z - a - late > 0.05) src.start(c.currentTime, a - fb.origin + late, z - a - late); }
         else src.start(when, a - fb.origin, z - a);
-        E.sources.push(src);
+        E.sources.push(src); seg.trk.push(src);
         if (!offline) src.onended = () => { const i = E.sources.indexOf(src); if (i>=0) E.sources.splice(i,1); };
       } else {
         const st = stretchFor(tid); if (!st) continue;
@@ -1269,7 +1287,7 @@ async function play(){
   const t0 = Math.ceil((ctx.currentTime + 0.15) * SR) / SR;
   E.makeSeg(t0, from, to);
   P = {E, timer: setInterval(tick, 25)};
-  tick(); wake(true);
+  tick(); wake(true); TAPLOG = []; if (typeof updateStartBtn==='function') updateStartBtn();
 }
 function tick(){
   if (!P) return;
@@ -1290,7 +1308,67 @@ function stop(immediate){
   mg.linearRampToValueAtTime(0, t + fade); E.stopAll(t + fade + 0.005);
   setTimeout(()=>{ if (!P) { mg.cancelScheduledValues(ctx.currentTime); mg.setValueAtTime(1, ctx.currentTime); } }, fade*1000 + 50);
   wake(false); lastPos = null; renderPos(null);
+  if (typeof updateStartBtn==='function') { updateStartBtn(); tapAfterStop(); }
 }
+
+/* ================= 첫박! downbeat sync ================= */
+let TAPLOG = [], tapSuggest = 0;
+const GLIDE_RATE = 0.015;           // smooth catch-up: ±1.5% for a few seconds
+function tapCal(){ return (S.tap && S.tap.cal != null ? S.tap.cal : 60) / 1000; }
+// audio-clock time of what was audible at the moment of the touch
+function tapCtxTime(ev){
+  const now = performance.now(); let ts = ev && ev.timeStamp ? ev.timeStamp : now; if (ts > now + 5 || now - ts > 1000) ts = now;
+  try { const o = ctx.getOutputTimestamp && ctx.getOutputTimestamp(); if (o && o.performanceTime > 0 && o.contextTime > 0) return o.contextTime + (ts - o.performanceTime)/1000; } catch(e){}
+  return ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0) - (now - ts)/1000;
+}
+function downbeatSync(ev){
+  if (!P || !ctx) return;
+  const E = P.E, seg = E.seg, T = S.tap;
+  const x = tapCtxTime(ev) - tapCal();             // the band's downbeat, on the app's schedule clock
+  if (seg.cin && x < seg.songStart) { toast('카운트인 중에는 맞출 수 없어요'); return; }
+  const o = seg.oAt(x);
+  let bi = bsearch(TL.beats, o), b = Math.max(1, Math.floor(Math.max(0,bi)/4)+1), best = b, bd = Infinity;
+  for (const c of [b-1, b, b+1]) { if (c < 1 || c > NBAR) continue; const d = Math.abs(o - TL.barO(c)); if (d < bd) { bd = d; best = c; } }
+  const e = o - TL.barO(best);                      // + : app is ahead of the band, − : app is behind
+  const ms = Math.round(e*1000), sgn = ms > 0 ? '앞서' : '늦어';
+  if (Math.abs(e) > (T.max || 1)) { toast('가까운 첫박이 '+(Math.abs(e)).toFixed(1)+'초 떨어져 있어서 그대로 둘게요'); flashTap('x'); return; }
+  if (Math.abs(e) < 0.012) { toast('잘 맞고 있어요 ('+best+'마디)'); flashTap('ok'); return; }
+  const now = ctx.currentTime;
+  const glideBusy = seg.gl && seg.gl.T2 > now;
+  const limit = T.mode === 'smooth' ? 0.15 : 0.06;
+  const canGlide = T.mode !== 'jump' && !seg.streams.length && !glideBusy && Math.abs(e) <= limit && seg.oAt(now + 0.32 + Math.abs(e)/GLIDE_RATE) < seg.o1;
+  if (canGlide) {
+    const T1 = now + 0.32, r = e > 0 ? 1 - GLIDE_RATE : 1 + GLIDE_RATE, T2 = T1 + Math.abs(e)/GLIDE_RATE;
+    seg.gl = {T1, T2, r};
+    for (const src of seg.trk) { try { src.playbackRate.setValueAtTime(r, T1); src.playbackRate.setValueAtTime(1, T2); } catch(err){} }
+    seg.end = seg.at(seg.o1);
+    toast(best+'마디 첫박 · '+Math.abs(ms)+'ms '+sgn+'서 부드럽게 맞추는 중');
+  } else {
+    const Tj = now + 0.1, oNew = seg.oFinal(Tj) - e;
+    if (oNew >= seg.o1 - 0.05) { toast('구간 끝이라 맞추지 않았어요'); return; }
+    const mg = RT.master.gain; mg.cancelScheduledValues(now); mg.setValueAtTime(1, now); mg.setValueAtTime(1, Tj - 0.012); mg.linearRampToValueAtTime(0.0001, Tj); mg.linearRampToValueAtTime(1, Tj + 0.02);
+    const NE = makeEngine(ctx, RT, false);
+    E.stopAll(Tj);
+    NE.makeSeg(Tj, 1, seg.toExcl, Math.max(0, oNew));
+    P.E = NE; tick();
+    toast(best+'마디 첫박으로 바로 맞췄어요 ('+Math.abs(ms)+'ms '+sgn+'서)');
+  }
+  flashTap('ok');
+  // tempo follow: the band keeps drifting the same way
+  TAPLOG.push({t: now, e}); if (TAPLOG.length > 4) TAPLOG.shift();
+  const L = TAPLOG.slice(-3);
+  if (L.length === 3 && L.every(q=>Math.sign(q.e) === Math.sign(e) && Math.abs(q.e) > 0.02) && L[2].t - L[0].t > 4) {
+    const drift = (L[1].e + L[2].e) / (L[2].t - L[0].t);      // seconds of drift per second
+    const sp = Math.round(Math.min(1.2, Math.max(0.5, S.tempo.speed * (1 - drift))) * 100);
+    if (sp !== Math.round(S.tempo.speed*100)) { tapSuggest = sp; setTimeout(()=>toast('밴드가 계속 '+(e>0?'느려요':'빨라요')+' → 멈추면 연습 속도 '+sp+'%를 추천할게요'), 1400); }
+  }
+}
+function flashTap(k){ const b = document.getElementById('btnStart'); if (!b) return; b.classList.remove('tapok','tapx'); void b.offsetWidth; b.classList.add(k==='x'?'tapx':'tapok'); }
+function tapAfterStop(){
+  if (!tapSuggest) return; const sp = tapSuggest; tapSuggest = 0;
+  setTimeout(()=>ask('합주하는 동안 밴드가 계속 '+(sp < S.tempo.speed*100 ? '느렸어요' : '빨랐어요')+'.\n연습 속도를 '+sp+'%로 바꿀까요?\n(지금 '+Math.round(S.tempo.speed*100)+'%)', [['그대로',0],['바꾸기',1,'on']]).then(v=>{ if (v) { S.tempo.speed = sp/100; tempoChanged(); if (typeof updateTempoLbl==='function') updateTempoLbl(); toast('연습 속도 '+sp+'%'); } }), 400);
+}
+
 let wakeLock = null;
 async function wake(on){ try { if (on && 'wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); else if (!on && wakeLock) { wakeLock.release(); wakeLock = null; } } catch(e){} }
 
@@ -1301,7 +1379,7 @@ function curPos(){
   const seg = P.E.seg, now = ctx.currentTime - (ctx.outputLatency || 0);
   if (now < seg.t0) return null;
   if (now < seg.songStart) return {cin: Math.min(seg.cin, Math.floor((now - seg.t0)/seg.bl)+1), bar: seg.from};
-  const o = seg.o0 + (now - seg.songStart), bi = bsearch(TL.beats, o);
+  const o = seg.oAt(now), bi = bsearch(TL.beats, o);
   if (bi < 0) return {bar:1, beat:0};
   return {bar: Math.floor(bi/4)+1, beat: bi%4+1};
 }
@@ -1453,12 +1531,12 @@ function setStart(n, addMarker){
   S.start = n;
   if (addMarker && !S.markers.find(m=>m.bar===n)) { S.markers.push({bar:n, name: secOf(n).name+' '+n+'마디'}); S.markers.sort((a,b)=>a.bar-b.bar); }
   if (S.loop.auto) { const s = secOf(n); S.loop.from = s.from; S.loop.to = s.to; }
-  $('#startLbl').textContent = n+'마디'; save(); refreshCells(); updateLoopBtn(); buildSecStrip(); renderSel();
+  if ($('#startLbl')) $('#startLbl').textContent = n+'마디'; save(); refreshCells(); updateLoopBtn(); buildSecStrip(); renderSel();
   toast('시작 위치: '+n+'마디'+(addMarker?' (★ 저장)':''));
 }
 function updateLoopBtn(){ const L = loopRange(); const b = $('#btnLoop'); b.classList.toggle('on', S.loop.on); b.innerHTML = '⟲ 반복'+(S.loop.on?'<br><small>'+L.from+'~'+L.to+'마디</small>':''); }
 function updateTempoLbl(){ const t = S.tempo; const m = t.mode===1 ? '원곡' : t.mode===2 ? '부드럽게' : t.bpm+'BPM'; const l = $('#tempoLbl'); if (l) l.textContent = m+' '+Math.round(t.speed*100)+'%'; }
-function refreshAll(){ if (typeof updateCin==='function') updateCin(); buildFaders(); buildGrid(); updateLoopBtn(); updateTempoLbl(); $('#startLbl').textContent = S.start+'마디'; $('#songBtn').textContent = '♪ '+SONG.name; showStatus(selBar, null); }
+function refreshAll(){ if (typeof updateCin==='function') updateCin(); buildFaders(); buildGrid(); updateLoopBtn(); updateTempoLbl(); if ($('#startLbl')) $('#startLbl').textContent = S.start+'마디'; $('#songBtn').textContent = '♪ '+SONG.name; showStatus(selBar, null); }
 
 /* ================= IndexedDB ================= */
 let dbp = null;
@@ -1891,7 +1969,8 @@ TABS.help = (box) => {
     '아래 <b>패턴 타일</b>(4박 모두, 첫 박 강세 …)을 누르면 박 치는 방식이 바뀌어요. <b>구간 전체</b>는 선택한 마디의 구간 전체를, <b>이 마디만</b>은 그 마디 하나만 바꿔요. <b>계속</b>은 재생 중이면 다음 마디부터(멈춰 있으면 선택한 마디부터) 곡 끝까지 바꾸고 저장해요. 반복이 켜져 있으면 반복 구간 앞쪽도 같이 바뀌어요. 되돌리려면 "구간 패턴 따르기"나 "구간" 탭의 "구간 처음 상태로".',
     '<b>⟲ 반복</b>을 켜면 구간 끝에서 카운트인을 치고 처음으로 돌아가요. 범위는 "템포·재생" 탭에서 바꿀 수 있어요.',
     '<b>🔒 잠금</b>을 켜면 정지 버튼만 눌려서 합주 중에 실수로 건드려도 안전해요.',
-    '구간 이름·범위·구간별 볼륨은 "구간" 탭에서 고쳐요.']);
+    '구간 이름·범위·구간별 볼륨은 "구간" 탭에서 고쳐요.',
+    '<b>[첫박!]</b>: 재생 중에는 오른쪽 5번째 버튼이 [첫박!]으로 바뀌어요. 드러머가 템포를 당기거나 늦춰서 앱과 어긋나면, 밴드의 <b>첫박(쿵)</b>에 맞춰 누르세요. 가장 가까운 마디 첫박으로 다시 맞춰요(최대 1초). 조금 어긋나면 몇 초 동안 살짝 빠르게·느리게 해서 따라잡고, 많이 어긋나면 바로 맞춰요. 방식과 "8번 눌러 맞추기"는 "템포·재생" 탭에 있어요. 잠금 중에도 눌려요.']);
   H('h-tempo','3. 템포와 연습 속도', [
     '<b>① 원곡 그대로</b>: 박 소리가 원곡의 흔들림을 그대로 따라가요. MR과 가장 잘 맞아요(기본).',
     '<b>② 부드럽게</b>: 드러머의 아주 작은 흔들림만 정리해요. 곡 소리는 그대로예요.',
@@ -1976,6 +2055,16 @@ TABS.play = (box, row) => {
   ciSel.addEventListener('change', ()=>{ S.countInPat = ciSel.value; save(); });
   box('카운트인', row('길이', choice([[4,'4박'],[2,'2박']], ()=>S.countInBeats===2?2:4, v=>{ S.countInBeats=v; updateCin(); })), row('패턴', ciSel), el('p',{class:'hint'}, '실행할 때와 반복할 때마다 시작 마디의 템포로 카운트인을 먼저 쳐요. 2박으로 하면 패턴의 앞 2박만 쳐요. 박 소리를 음소거해도 카운트인은 나와요.'));
   box('정지와 볼륨 전환', row('정지', choice([[false,'바로 멈추기'],[true,'줄이며 멈추기']], ()=>S.stopFade, v=>S.stopFade=v)), row('구간 볼륨', choice([[false,'바로 바뀌기'],[true,'부드럽게(1박)']], ()=>S.smoothVol, v=>S.smoothVol=v)));
+  const TP = S.tap;
+  const calLbl = el('span',{class:'hint'}, TP.cal==null ? '아직 안 맞춤(기본 60ms)' : '맞춤 완료');
+  box('[첫박!] 맞추기',
+    row('버튼', choice([[true,'재생 중 보이기'],[false,'끄기']], ()=>TP.on, v=>{ TP.on=v; updateStartBtn(); })),
+    row('맞추는 방식', choice([['auto','자동(추천)'],['jump','바로 맞추기'],['smooth','부드럽게 따라잡기']], ()=>TP.mode, v=>{ TP.mode=v; renderTab(); })),
+    el('p',{class:'hint'}, {auto:'조금(0.06초 이하) 어긋나면 몇 초 동안 살짝 빠르게·느리게 해서 따라잡고, 많이 어긋나면 그 자리에서 바로 맞춰요.', jump:'누르는 순간 바로 그 마디 첫박으로 맞춰요. 아주 짧게 소리가 끊길 수 있어요.', smooth:'0.15초 이하는 몇 초 동안 살짝 빠르게·느리게 해서 따라잡아요(음높이가 아주 약간 바뀌어요). 더 많이 어긋나면 바로 맞춰요.'}[TP.mode]),
+    row('최대 보정', stepper(()=>TP.max, v=>TP.max=Math.round(v*10)/10, 0.1, v=>v.toFixed(1)+'초', 0.2, 2)),
+    row('손 반응 시간', stepper(()=>TP.cal==null?60:TP.cal, v=>{ TP.cal=v; }, 5, v=>v+' ms', 0, 300), el('button',{class:'mini on', onclick:tapCalibrate}, '8번 눌러 맞추기'), calLbl),
+    el('p',{class:'hint'}, '재생 중에는 오른쪽 5번째 "시작" 버튼이 [첫박!]으로 바뀌어요. 밴드의 첫박(쿵)에 맞춰 누르면 가장 가까운 마디 첫박으로 다시 맞춰요. 처음 한 번은 "8번 눌러 맞추기"로 손이 누르는 시간을 재 두면 더 정확해요. 계속 같은 쪽으로 어긋나면 멈춘 뒤 알맞은 연습 속도를 추천해 줘요. 잠금 중에도 눌려요.'),
+    tapSuggest ? el('button',{class:'mini on', onclick:()=>{ S.tempo.speed = tapSuggest/100; tapSuggest = 0; tempoChanged(); renderTab(); }}, '추천 속도 '+tapSuggest+'% 적용') : null);
   box('싱크 미세조정', row('박 소리', stepper(()=>S.syncMs, v=>S.syncMs=v, 5, v=>(v>0?'+':'')+v+' ms', -300, 300)), el('p',{class:'hint'}, '박 소리가 곡보다 빠르게 들리면 +, 늦게 들리면 − 쪽으로 맞추세요.'));
   box('반복 범위',
     row('시작', stepper(()=>S.loop.from, v=>{ S.loop.from=v; if (S.loop.to<v) S.loop.to=v; S.loop.auto=false; renderTab(); }, 1, v=>v+'마디', 1, NBAR)),
@@ -2169,11 +2258,47 @@ function closeSplash(){ $('#splash').classList.remove('open'); cancelAnimationFr
   if (seen !== APP_VER) { try { localStorage.setItem('zk-ver', APP_VER); } catch(e){} const w = el('div',{style:'font-size:14px;line-height:1.7'}, el('div',{}, el('b',{style:'color:var(--accent)'}, APP_VER), ' ', el('span',{style:'color:var(--dim)'}, APP_DATE)), el('div',{}, CHANGELOG[0][2]));
     ask('새 버전으로 바뀌었어요', [['업데이트 기록',2],['확인',1,'on']], w).then(v=>{ if (v===2) showLog(); }); } }
 
+/* ================= 첫박 calibration ================= */
+async function tapCalibrate(){
+  if (P) { toast('멈춘 뒤에 맞춰 주세요'); return; }
+  if (!clickBuf) { toast('박 소리를 불러오는 중이에요'); return; }
+  if (!(await ensureCtx())) return;
+  const bl = 0.6, lead = 4, N = 8, t0 = ctx.currentTime + 0.4, clicks = [], taps = [];
+  const out = ctx.createGain(); out.gain.value = 0.9; out.connect(ctx.destination);
+  const srcs = [];
+  for (let i=0;i<lead+N;i++){ const t = t0 + i*bl, s = ctx.createBufferSource(); s.buffer = clickBuf; const g = ctx.createGain(); g.gain.value = i<lead ? 0.5 : 1; s.connect(g); g.connect(out); s.start(t); srcs.push(s); if (i>=lead) clicks.push(t); }
+  const msg = el('div',{style:'font-size:15px;margin-bottom:10px'}, '"딱" 소리 4번은 준비, 그다음 8번 소리에 맞춰 아래 판을 누르세요.');
+  const pad = el('button',{class:'tappad'}, '준비…');
+  let finished = false;
+  pad.addEventListener('pointerdown', ev=>{ ev.preventDefault(); if (finished) return; taps.push(tapCtxTime(ev)); pad.classList.add('hit'); setTimeout(()=>pad.classList.remove('hit'), 90); });
+  const box = el('div',{}, msg, pad);
+  const upd = setInterval(()=>{ const n = Math.floor((ctx.currentTime - t0)/bl) - lead + 1; pad.textContent = n < 1 ? '준비 '+Math.min(lead, lead + n)+'' : n <= N ? n+' / '+N : '끝'; }, 50);
+  const end = new Promise(r=>setTimeout(r, (t0 - ctx.currentTime + (lead+N)*bl + 0.5)*1000));
+  const user = ask('[첫박!] 손 반응 시간 맞추기', [['그만',0]], box);
+  const v = await Promise.race([end.then(()=>1), user]);
+  finished = true; clearInterval(upd); for (const s of srcs) { try { s.stop(); } catch(e){} }
+  setTimeout(()=>{ try { out.disconnect(); } catch(e){} }, 300);
+  if (v !== 1) return;
+  $('#dlg').classList.remove('open');
+  const d = [];
+  for (const x of taps) { let best = null; for (const c of clicks) if (best === null || Math.abs(x-c) < Math.abs(x-best)) best = c; if (best !== null && Math.abs(x-best) < 0.3) d.push(x-best); }
+  if (d.length < 5) { await ask('누른 횟수가 부족해요 ('+d.length+'번). 소리에 맞춰 8번 눌러 주세요.', [['확인',1,'on']]); return; }
+  d.sort((a,b)=>a-b); const med = d[d.length>>1];
+  const spread = d[Math.floor(d.length*0.8)] - d[Math.floor(d.length*0.2)];
+  const ms = Math.max(0, Math.min(300, Math.round(med*1000/5)*5));
+  S.tap.cal = ms; save(); if (curTab==='play' && $('#sheet').classList.contains('open')) renderTab();
+  await ask('맞췄어요. 손 반응 시간 '+ms+' ms'+(spread > 0.06 ? '\n(누른 시간이 들쭉날쭉해요. 한 번 더 해 보면 더 정확해요)' : ''), [['확인',1,'on']]);
+}
+
 /* ================= wiring ================= */
 $('#btnPlay').addEventListener('click', play);
 $('#btnStop').addEventListener('click', ()=>stop(false));
 $('#btnLoop').addEventListener('click', ()=>{ S.loop.on = !S.loop.on; if (S.loop.on && S.loop.auto) { const s = secOf(S.start); S.loop.from = s.from; S.loop.to = s.to; } save(); updateLoopBtn(); refreshCells(); });
-$('#btnStart').addEventListener('click', ()=>openSheet('marks'));
+function updateStartBtn(){ const b = $('#btnStart'), on = !!P && S.tap && S.tap.on;
+  b.classList.toggle('tap', on);
+  b.innerHTML = on ? '<span>첫박!</span><b>쿵에 누르기</b>' : '<span>시작</span><b id="startLbl">'+S.start+'마디</b>'; }
+$('#btnStart').addEventListener('pointerdown', ev=>{ if (P && S.tap && S.tap.on) { ev.preventDefault(); downbeatSync(ev); } });
+$('#btnStart').addEventListener('click', ()=>{ if (P && S.tap && S.tap.on) return; openSheet('marks'); });
 $('#btnTempo').addEventListener('click', ()=>openSheet('play'));
 $('#songBtn').addEventListener('click', ()=>openSheet('song'));
 $('#btnSet').addEventListener('click', ()=>openSheet());
